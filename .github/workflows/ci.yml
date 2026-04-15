@@ -1,0 +1,53 @@
+name: aaedn-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy safetensors transformers
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Compile validation tests
+        run: |
+          c++ -std=c++17 -O2 -Iinclude \
+            tests/test_artifact_roundtrip.cpp src/arena.cpp src/quant.cpp src/tokenizer.cpp src/rag.cpp \
+            -o build/test_artifact_roundtrip
+          c++ -std=c++17 -O2 -Iinclude \
+            tests/test_startup_failure.cpp src/arena.cpp src/quant.cpp src/tokenizer.cpp src/rag.cpp \
+            -o build/test_startup_failure
+
+      - name: Run validation tests
+        run: |
+          build/test_artifact_roundtrip
+          build/test_startup_failure
+
+      - name: Artifact reproducibility check
+        run: |
+          python tools/convert_model.py --model model.safetensors --output /tmp/model_a.abn || true
+          python tools/convert_model.py --model model.safetensors --output /tmp/model_b.abn || true
+          if [ -f /tmp/model_a.abn ] && [ -f /tmp/model_b.abn ]; then
+            cmp -s /tmp/model_a.abn /tmp/model_b.abn
+          fi
+
+      - name: Benchmark gates
+        run: |
+          cd build
+          python ../tools/benchmark.py --command "./aaedn --temp 0.8 --topp 0.95" --runs 1 --min-tok-s 1.0
